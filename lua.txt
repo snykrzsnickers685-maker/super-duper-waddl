@@ -1,0 +1,76 @@
+local https = require('ssl.https')
+local json = require('dkjson')
+
+-- 1. الإعدادات الأساسية
+local TOKEN = "7856132099:AAGzZ7q3V3B2-oRvI8SXeBSm__J6glsVyMU"
+local SUDO_ID = 12345678 -- ضع  يديك (8010870609) هن 
+local API_URL = "https://api.telegram.org/bot" .. TOKEN .. "/"
+
+-- 2. دوال الذاكرة (التحميل والحفظ)
+function save_db(data)
+    local f = io.open("data.json", "w")
+    f:write(json.encode(data))
+    f:close()
+end
+
+function load_db()
+    local f = io.open("data.json", "r")
+    if not f then return {groups = {}} end
+    local contents = f:read("*all")
+    f:close()
+    return json.decode(contents)
+end
+
+-- 3. دالة إرسال الرسائل (مبسطة)
+function send_msg(chat_id, text, reply_to)
+    local url = API_URL .. "sendMessage?chat_id=" .. chat_id .. "&text=" .. text
+    if reply_to then url = url .. "&reply_to_message_id=" .. reply_to end
+    return https.request(url)
+end
+
+-- 4. منطق الحماية والأوامر
+function handle_msg(msg)
+    local db = load_db()
+    local chat_id = tostring(msg.chat.id)
+    local text = msg.text or ""
+    local user_id = msg.from.id
+
+    -- [أوامر المطور]
+    if text == "تفعيل" and user_id == SUDO_ID then
+        db.groups[chat_id] = {lock_link = true, lock_forward = false}
+        save_db(db)
+        send_msg(chat_id, "✅ تم تفعيل الحماية بنجاح")
+    end
+
+    -- [فحص الحماية] (يعمل فقط إذا كانت المجموعة مفعلة)
+    if db.groups[chat_id] then
+        -- قفل الروابط
+        if db.groups[chat_id].lock_link and (text:match("t.me/") or text:match("http")) then
+            https.request(API_URL .. "deleteMessage?chat_id=" .. chat_id .. "&message_id=" .. msg.message_id)
+        end
+        
+        -- قفل التوجيه
+        if db.groups[chat_id].lock_forward and msg.forward_from_chat then
+            https.request(API_URL .. "deleteMessage?chat_id=" .. chat_id .. "&message_id=" .. msg.message_id)
+        end
+    end
+
+    -- [أوامر عامة]
+    if text == "ايدي" then
+        send_msg(chat_id, "الايدي الخاص بك: " .. user_id, msg.message_id)
+    end
+end
+
+-- 5. الحلقة الذكية (Loop)
+local last_update = 0
+print("--- البوت بدأ العمل الآن ---")
+while true do
+    local res, code = https.request(API_URL .. "getUpdates?offset=" .. last_update + 1 .. "&timeout=10")
+    if code == 200 then
+        local data = json.decode(res)
+        for _, update in ipairs(data.result) do
+            last_update = update.update_id
+            if update.message then handle_msg(update.message) end
+        end
+    end
+end
